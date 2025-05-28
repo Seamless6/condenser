@@ -36,6 +36,12 @@ class Subset:
 
         self.__db_helper.turn_off_constraints(self.__destination_conn)
 
+    def __del__(self):
+        # Close SSH tunnels if they exist
+        if hasattr(self, '__source_dbc') and self.__source_dbc:
+            self.__source_dbc.close_tunnel()
+        if hasattr(self, '__destination_dbc') and self.__destination_dbc:
+            self.__destination_dbc.close_tunnel()
 
     def run_middle_out(self):
         passthrough_tables = self.__get_passthrough_tables()

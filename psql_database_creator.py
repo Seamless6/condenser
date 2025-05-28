@@ -84,7 +84,9 @@ class PsqlDatabaseCreator:
 
             os.chdir(cur_path)
 
-            self.run_psql(result.stdout.decode('utf-8'))
+            # Filter the SQL commands to remove incompatible parameters
+            post_data_sql = self.__filter_commands(result.stdout.decode('utf-8'))
+            self.run_psql(post_data_sql)
 
     def __filter_commands(self, input):
 
@@ -93,14 +95,29 @@ class PsqlDatabaseCreator:
             'COMMENT ON CONSTRAINT',
             'COMMENT ON EXTENSION'
         ]
+        
+        # Parameters that might not be supported across different PostgreSQL versions
+        filtered_parameters = [
+            'transaction_timeout',
+            'idle_in_transaction_session_timeout',  # Added for completeness
+            'default_table_access_method'           # Added for completeness
+        ]
 
         retval = []
         for line in input:
             l = line.rstrip()
             filtered = False
+            
+            # Filter by keywords
             for key in filtered_key_words:
                 if l.startswith(key):
                     filtered = True
+            
+            # Filter out unsupported parameters
+            for param in filtered_parameters:
+                if param in l and 'SET' in l:
+                    filtered = True
+                    print(f"Filtering out potentially incompatible parameter: {param}")
 
             if not filtered:
                 retval.append(l)

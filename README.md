@@ -2,7 +2,7 @@
 
 Condenser is a config-driven database subsetting tool for Postgres and MySQL.
 
-Subsetting data is the process of taking a representative sample of your data in a manner that preserves the integrity of your database, e.g., give me 5% of my users. If you do this naively, e.g., just grab 5% of all the tables in your database, most likely, your database will break foreign key constraints. At best, you’ll end up with a statistically non-representative data sample.
+Subsetting data is the process of taking a representative sample of your data in a manner that preserves the integrity of your database, e.g., give me 5% of my users. If you do this naively, e.g., just grab 5% of all the tables in your database, most likely, your database will break foreign key constraints. At best, you'll end up with a statistically non-representative data sample.
 
 One common use-case is to scale down a production database to a more reasonable size so that it can be used in staging, test, and development environments. This can be done to save costs and, when used in tandem with PII removal, can be quite powerful as a productivity enhancer. Another example is copying specific rows from one database and placing them into another while maintaining referential integrity.
 
@@ -16,11 +16,12 @@ Our open-source tool can subset databases up to 10GB, but it will struggle with 
 
 Five steps to install, assuming Python 3.5+:
 
-1. Download the required Python modules. You can use [`pip`](https://pypi.org/project/pip/) for easy installation. The required modules are `toposort`, `psycopg2-binary`, and `mysql-connector-python`.
+1. Download the required Python modules. You can use [`pip`](https://pypi.org/project/pip/) for easy installation. The required modules are `toposort`, `psycopg2-binary`, `mysql-connector-python`, and `sshtunnel` (if using SSH tunneling).
 ```
 $ pip install toposort
 $ pip install psycopg2-binary
 $ pip install mysql-connector-python
+$ pip install sshtunnel
 ```
 2. Install Postgres and/or MySQL database tools. For Postgres we need `pg_dump` and `psql` tools; they need to be on your `$PATH` or point to them with `$POSTGRES_PATH`. For MySQL we need `mysqldump` and `mysql`, they can be on your `$PATH` or point to them with `$MYSQL_PATH`.
 3. Download this repo. You can clone the repo or Download it as a zip. Scroll up, it's the green button that says "Clone or download".
@@ -53,7 +54,21 @@ Below we describe the use of all configuration parameters, but the best place to
 
 `source_db_connection_info`: Source database connection details. These are recorded as a JSON object with the fields `user_name`, `host`, `db_name`, `ssl_mode`, `password` (optional), and `post`. If `password` is omitted, then you will be prompted for a password. See `example-config.json` for details.
 
+`source_db_connection_info.ssh_tunnel`: (Optional) SSH tunnel configuration for source database. If your database is not directly accessible, you can configure an SSH tunnel to connect through a gateway server. This is a JSON object with the following fields:
+  - `ssh_host`: The SSH server hostname (required)
+  - `ssh_port`: The SSH port (default: 22)
+  - `ssh_username`: The SSH username (required)
+  - `ssh_password`: SSH password (optional if using private key or SSH agent)
+  - `ssh_private_key`: Path to SSH private key file (optional if using password or SSH agent)
+  - `ssh_private_key_password`: Password for encrypted private key (optional)
+  - `use_ssh_agent`: Set to true to use the SSH agent for authentication (default: false)
+  - `local_port`: Local port to use for forwarding (default: random free port)
+  - `remote_host`: The database host from the perspective of the SSH server (optional)
+  - `remote_port`: The database port from the perspective of the SSH server (optional, defaults to the port specified in the main connection)
+
 `destination_db_connection_info`: Destination database connection details. Same fields as `source_db_connection_info`.
+
+`destination_db_connection_info.ssh_tunnel`: (Optional) SSH tunnel configuration for destination database. Same fields as `source_db_connection_info.ssh_tunnel`.
 
 `initial_targets`: JSON array of JSON objects. The inner object must contain a `target` field, which is a target table, and either a `where` field or a `percent` field. The `where` field is used to specify a WHERE clause for the subsetting. The `percent` field indicates we want a specific percentage of the target table; it is equivalent to `"where": "random() < <percent>/100.0"`.
 
@@ -88,6 +103,51 @@ Two commandline arguements are supported:
 `-v`: Verbose output. Useful for performance debugging. Lists almost every query made, and it's speed.
 
 `--no-constraints`: For Postgres this will not add constraints found in the source database to the destination database. This option has no effect for MySQL.
+
+# SSH Tunneling
+
+If your database is not directly accessible (e.g., it's behind a firewall or in a private network), you can use SSH tunneling to connect through a gateway server. This is configured in the `ssh_tunnel` section of your database connection settings.
+
+Example configuration with SSH tunnel:
+```json
+"source_db_connection_info": {
+    "user_name": "db_user",
+    "host": "internal-db-host",
+    "db_name": "source_db",
+    "port": 5432,
+    "ssh_tunnel": {
+        "ssh_host": "gateway.example.com",
+        "ssh_port": 22,
+        "ssh_username": "ssh_user",
+        "ssh_password": "ssh_password",
+        "remote_host": "actual-db-host",
+        "remote_port": 3306
+    }
+}
+```
+
+The `remote_host` parameter in the SSH tunnel configuration specifies the database host from the perspective of the SSH server. If omitted, the system will use the main database host ("internal-db-host" in the example above), which may not be correct if the hostname is different when accessed from the SSH server.
+
+The `remote_port` parameter allows you to specify a different port for the database when connecting through the SSH server. This is useful when the database is accessible on a different port from the SSH server's perspective than what is specified in the main connection settings. If omitted, it will use the port from the main connection settings.
+
+You can use either password authentication or private key authentication:
+```json
+"ssh_tunnel": {
+    "ssh_host": "gateway.example.com",
+    "ssh_username": "ssh_user",
+    "ssh_private_key": "/path/to/private_key",
+    "ssh_private_key_password": "optional_key_password"
+}
+```
+
+Or you can use the SSH agent for authentication (recommended if you have SSH keys set up with ssh-agent):
+```json
+"ssh_tunnel": {
+    "ssh_host": "gateway.example.com",
+    "ssh_username": "ssh_user",
+    "use_ssh_agent": true
+}
+```
 
 # Requirements
 

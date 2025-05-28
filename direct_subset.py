@@ -64,5 +64,8 @@ if __name__ == '__main__':
         result_tabulator.tabulate(source_dbc, destination_dbc, all_tables)
     finally:
         subsetter.unprep_temp_dbs()
+        # Explicitly close SSH tunnels
+        source_dbc.close_tunnel()
+        destination_dbc.close_tunnel()
 
 

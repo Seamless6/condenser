@@ -14,14 +14,34 @@
         "user_name": "user",
         "host": "host.host.com",
         "db_name": "source_db",
-        "port": 5432
+        "port": 5432,
+        "ssh_tunnel": {
+            "ssh_host": "gateway.example.com",
+            "ssh_port": 22,
+            "ssh_username": "ssh_user",
+            "ssh_password": "optional_ssh_password",
+            "ssh_private_key": "/path/to/private_key",
+            "ssh_private_key_password": "optional_key_password",
+            "local_port": 5433,
+            "remote_host": "actual-db-host-from-ssh-server",
+            "remote_port": 5432
+        }
     },
     "destination_db_connection_info": {
         "user_name": "user",
         "host": "host.host.com",
         "db_name": "destination_db",
         "password": "if you don't include a password option, you will be prompted every time",
-        "port": 5432
+        "port": 5432,
+        "ssh_tunnel": {
+            "ssh_host": "gateway.example.com",
+            "ssh_port": 22,
+            "ssh_username": "ssh_user",
+            "use_ssh_agent": true,
+            "local_port": 5434,
+            "remote_host": "actual-db-host-from-ssh-server",
+            "remote_port": 5432
+        }
     },
     "keep_disconnected_tables": false,
     "upstream_filters": [

@@ -1,6 +1,8 @@
 import config_reader
 import psycopg2, mysql.connector
 import os, pathlib, re, urllib, subprocess, os.path, json, getpass, time, sys, datetime
+import sshtunnel
+import paramiko
 
 class DbConnect:
 
@@ -25,8 +27,91 @@ class DbConnect:
         self.db_name = connection_info['db_name']
         self.ssl_mode = connection_info['ssl_mode'] if 'ssl_mode' in connection_info else None
         self.__db_type = db_type.lower()
+        
+        # SSH tunnel configuration
+        self.ssh_tunnel = None
+        self.ssh_config = connection_info.get('ssh_tunnel', None)
+        if self.ssh_config:
+            if 'ssh_host' not in self.ssh_config:
+                raise Exception('Missing required key in ssh_tunnel config: ssh_host')
+            if 'ssh_username' not in self.ssh_config:
+                raise Exception('Missing required key in ssh_tunnel config: ssh_username')
+            # Only prompt for password if no authentication method is specified
+            # (no password, no private key, and not using SSH agent)
+            if ('ssh_password' not in self.ssh_config and 
+                'ssh_private_key' not in self.ssh_config and 
+                not self.ssh_config.get('use_ssh_agent', False)):
+                self.ssh_config['ssh_password'] = getpass.getpass('Enter SSH password for {0}@{1}: '.format(
+                    self.ssh_config['ssh_username'], self.ssh_config['ssh_host']))
 
     def get_db_connection(self, read_repeatable=False):
+        # Start SSH tunnel if configured
+        if self.ssh_config:
+            if self.ssh_tunnel is None:
+                # Get the remote database host to connect to through the tunnel
+                # If remote_host is specified in ssh_tunnel config, use it
+                # Otherwise, use the database host specified in the main connection config
+                remote_host = self.ssh_config.get('remote_host', self.host)
+                
+                # Get the remote port for the database connection
+                # If remote_port is specified in ssh_tunnel config, use it
+                # Otherwise, use the port specified in the main connection config
+                remote_port = self.ssh_config.get('remote_port', self.port)
+                
+                # Initialize the tunnel
+                tunnel_kwargs = {
+                    'ssh_address_or_host': (self.ssh_config['ssh_host'], self.ssh_config.get('ssh_port', 22)),
+                    'ssh_username': self.ssh_config['ssh_username'],
+                    'remote_bind_address': (remote_host, remote_port),
+                    'local_bind_address': ('127.0.0.1', self.ssh_config.get('local_port', 0))  # 0 = random free port
+                }
+                
+                # Add authentication method (password, key, or SSH agent)
+                using_ssh_agent = self.ssh_config.get('use_ssh_agent', False)
+                
+                if using_ssh_agent:
+                    # When using SSH agent, explicitly avoid loading any key files
+                    tunnel_kwargs['allow_agent'] = True
+                    # Get keys from SSH agent without the tuple-creating comma
+                    keys = paramiko.agent.Agent().get_keys()
+                    if keys:
+                        tunnel_kwargs['ssh_pkey'] = keys[0]  # Use first key from agent
+                        print(f"Using SSH agent key for authentication to {self.ssh_config['ssh_host']}")
+                    else:
+                        print(f"Warning: No keys found in SSH agent. Falling back to other authentication methods.")
+                        tunnel_kwargs['look_for_keys'] = True
+                elif 'ssh_password' in self.ssh_config:
+                    tunnel_kwargs['ssh_password'] = self.ssh_config['ssh_password']
+                    # Don't use agent when password is explicitly provided
+                    tunnel_kwargs['allow_agent'] = False
+                    tunnel_kwargs['look_for_keys'] = False
+                elif 'ssh_private_key' in self.ssh_config:
+                    tunnel_kwargs['ssh_pkey'] = self.ssh_config['ssh_private_key']
+                    if 'ssh_private_key_password' in self.ssh_config:
+                        tunnel_kwargs['ssh_private_key_password'] = self.ssh_config['ssh_private_key_password']
+                    # Don't use agent when key is explicitly provided
+                    tunnel_kwargs['allow_agent'] = False
+                
+                try:
+                    # Start the tunnel
+                    self.ssh_tunnel = sshtunnel.SSHTunnelForwarder(**tunnel_kwargs)
+                    self.ssh_tunnel.start()
+                    
+                    # Override host and port with tunnel's local endpoint
+                    self.tunnel_host = '127.0.0.1'  # Use 127.0.0.1 instead of localhost to avoid IPv6 issues
+                    self.tunnel_port = self.ssh_tunnel.local_bind_port
+                    print(f"SSH tunnel established: {self.tunnel_host}:{self.tunnel_port} -> {remote_host}:{remote_port}")
+                except Exception as e:
+                    print(f"Error establishing SSH tunnel: {str(e)}")
+                    raise
+            else:
+                # Tunnel already established
+                self.tunnel_host = '127.0.0.1'
+                self.tunnel_port = self.ssh_tunnel.local_bind_port
+        else:
+            # No tunnel, use direct connection
+            self.tunnel_host = self.host
+            self.tunnel_port = self.port
 
         if self.__db_type == 'postgres':
             return PsqlConnection(self, read_repeatable)
@@ -34,6 +119,12 @@ class DbConnect:
             return MySqlConnection(self, read_repeatable)
         else:
             raise ValueError('unknown db_type ' + self.__db_type)
+    
+    def close_tunnel(self):
+        if self.ssh_tunnel is not None:
+            self.ssh_tunnel.close()
+            self.ssh_tunnel = None
+            print("SSH tunnel closed")
 
 class DbConnection:
     def __init__(self, connection):
@@ -74,7 +165,7 @@ class LoggingCursor:
 # method across MySQL and Postgres. This one is for Postgres
 class PsqlConnection(DbConnection):
     def __init__(self,  connect, read_repeatable):
-        connection_string = 'dbname=\'{0}\' user=\'{1}\' password=\'{2}\' host={3} port={4}'.format(connect.db_name, connect.user, connect.password, connect.host, connect.port)
+        connection_string = 'dbname=\'{0}\' user=\'{1}\' password=\'{2}\' host={3} port={4}'.format(connect.db_name, connect.user, connect.password, connect.tunnel_host, connect.tunnel_port)
 
         if connect.ssl_mode :
             connection_string = connection_string + ' sslmode={0}'.format(connect.ssl_mode)
@@ -91,7 +182,7 @@ class PsqlConnection(DbConnection):
 # method across MySQL and Postgres. This one is for MySQL
 class MySqlConnection(DbConnection):
     def __init__(self,  connect, read_repeatable):
-        DbConnection.__init__(self, mysql.connector.connect(host=connect.host, port=connect.port, user=connect.user, password=connect.password, database=connect.db_name))
+        DbConnection.__init__(self, mysql.connector.connect(host=connect.tunnel_host, port=connect.tunnel_port, user=connect.user, password=connect.password, database=connect.db_name))
 
         self.db_name = connect.db_name
 
